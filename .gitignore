@@ -1,0 +1,31 @@
+# secrets & local config
+.env
+*.local
+
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# runtime data (lives in the Docker volume, but just in case)
+data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+certs/
+*.onnx
+*.wav
+*.mp3
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# node (if tooling gets added later)
+node_modules/

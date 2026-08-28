@@ -1,0 +1,24 @@
+services:
+  diana:
+    build: ./server
+    container_name: diana
+    restart: unless-stopped          # survives reboots (with Docker set to start at login)
+    ports:
+      - "8080:8080"                  # http  — LAN: http://<your-mac-ip>:8080
+      - "8443:8443"                  # https — LAN: https://<your-mac-ip>:8443 (mic works on phones)
+    environment:
+      DIANA_LAN_IP: ${DIANA_LAN_IP:-}   # put your Mac's LAN IP here for a matching cert
+      OLLAMA_URL: ${OLLAMA_URL:-}
+      DIANA_MODEL: ${DIANA_MODEL:-qwen3.6:latest}
+      WORKER_MODEL: ${WORKER_MODEL:-mistral:latest}
+      STT_MODEL: ${STT_MODEL:-base}
+      TTS_ENGINE: ${TTS_ENGINE:-piper}
+      TTS_VOICE: ${TTS_VOICE:-en_US-lessac-medium}
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-2}
+    volumes:
+      - diana-data:/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  diana-data:
