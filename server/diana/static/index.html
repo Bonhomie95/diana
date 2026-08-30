@@ -2,12 +2,18 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Diana</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/static/style.css">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='13' fill='%237C3AED'/><circle cx='16' cy='16' r='6' fill='%23EC4899'/></svg>">
+<link rel="manifest" href="/static/manifest.json">
+<meta name="theme-color" content="#0a0713">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+<link rel="icon" href="/static/icon.svg">
+<link rel="icon" type="image/png" sizes="192x192" href="/static/icon-192.png">
 </head>
 <body>
 <div id="app">
@@ -28,29 +34,45 @@
       </div>
     </div>
     <div class="topbar-right">
-      <span class="chip" id="model-chip" title="Diana's brain model">—</span>
+      <button class="chip" id="model-chip" title="Models — open settings">—</button>
       <span class="conn" id="conn-dot" title="realtime link"></span>
     </div>
   </header>
 
-  <nav id="mobile-tabs">
-    <button data-tab="chat" class="active">Converse</button>
-    <button data-tab="tree">Missions</button>
-    <button data-tab="team">Team</button>
-  </nav>
+  <div id="main-wrap">
 
-  <main id="layout">
+    <!-- ============ NAVIGATION ============ -->
+    <nav id="nav" aria-label="Main">
+      <button data-view="chat" class="nav-btn" aria-label="Chat">
+        <svg viewBox="0 0 24 24" class="icon"><path d="M4 4h16a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H8l-4 4a.6.6 0 0 1-1-.44V5a1 1 0 0 1 1-1z" fill="currentColor"/></svg>
+        <span>Chat</span>
+      </button>
+      <button data-view="missions" class="nav-btn" aria-label="Missions">
+        <svg viewBox="0 0 24 24" class="icon"><path d="M12 2a3 3 0 0 1 1 5.83V11h5a2 2 0 0 1 2 2v3.17a3 3 0 1 1-2 0V13h-5v3.17a3 3 0 1 1-2 0V13H6v3.17a3 3 0 1 1-2 0V13a2 2 0 0 1 2-2h5V7.83A3 3 0 0 1 12 2z" fill="currentColor"/></svg>
+        <span>Missions</span>
+      </button>
+      <button data-view="team" class="nav-btn" aria-label="Team">
+        <svg viewBox="0 0 24 24" class="icon"><path d="M8 11a3.5 3.5 0 1 0-3.5-3.5A3.5 3.5 0 0 0 8 11zm8 0a3.5 3.5 0 1 0-3.5-3.5A3.5 3.5 0 0 0 16 11zM8 13c-2.67 0-6 1.34-6 4v2a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1v-2c0-2.66-3.33-4-6-4zm8 0c-.42 0-.9.04-1.4.11A5.14 5.14 0 0 1 16.5 17v2a2.5 2.5 0 0 1-.09.66H21a1 1 0 0 0 1-1V17c0-2.66-3.33-4-6-4z" fill="currentColor"/></svg>
+        <span>Team</span>
+      </button>
+      <button data-view="connect" class="nav-btn" aria-label="Connectors">
+        <svg viewBox="0 0 24 24" class="icon"><path d="M9 3a1 1 0 0 1 1 1v3h4V4a1 1 0 1 1 2 0v3h2a1 1 0 0 1 1 1v3a6 6 0 0 1-5 5.92V21a1 1 0 1 1-2 0v-4.08A6 6 0 0 1 7 11V8a1 1 0 0 1 1-1h0V4a1 1 0 0 1 1-1z" fill="currentColor"/></svg>
+        <span>Connect</span>
+      </button>
+      <button data-view="settings" class="nav-btn" aria-label="Settings">
+        <svg viewBox="0 0 24 24" class="icon"><path d="M19.4 13a7.6 7.6 0 0 0 .06-1 7.6 7.6 0 0 0-.06-1l2.06-1.6a.5.5 0 0 0 .12-.64l-1.95-3.37a.5.5 0 0 0-.6-.22l-2.43 1a7.4 7.4 0 0 0-1.73-1l-.37-2.58A.5.5 0 0 0 14 2h-4a.5.5 0 0 0-.5.42l-.37 2.59a7.4 7.4 0 0 0-1.73 1l-2.43-1a.5.5 0 0 0-.6.23L2.42 8.6a.5.5 0 0 0 .12.64L4.6 10.85a7.6 7.6 0 0 0 0 2.13L2.54 14.6a.5.5 0 0 0-.12.64l1.95 3.37c.13.22.39.31.6.22l2.43-1a7.4 7.4 0 0 0 1.73 1l.37 2.58A.5.5 0 0 0 10 22h4a.5.5 0 0 0 .5-.42l.37-2.59a7.4 7.4 0 0 0 1.73-1l2.43 1c.21.09.47 0 .6-.22l1.95-3.37a.5.5 0 0 0-.12-.64zM12 15.5A3.5 3.5 0 1 1 15.5 12 3.5 3.5 0 0 1 12 15.5z" fill="currentColor"/></svg>
+        <span>Settings</span>
+      </button>
+    </nav>
 
-    <!-- ============ CONVERSATION ============ -->
-    <section id="chat-panel" class="panel" data-panel="chat">
+    <!-- ============ CHAT (pinned on desktop, a view on mobile) ============ -->
+    <section id="chat-panel" class="panel view" data-view-panel="chat">
       <div class="panel-head">
         <h2>Conversation</h2>
         <div class="head-controls">
-          <label class="toggle" title="Always ready — say 'Diana' to wake her">
-            <input type="checkbox" id="wake-toggle">
-            <span class="track"><span class="thumb"></span></span>
-            <svg viewBox="0 0 24 24" class="icon"><path d="M17 20c-.3 0-.5-.1-.7-.3-.6-.6-1.6-1-2.8-1s-2.2.4-2.8 1c-.4.4-1 .4-1.4 0s-.4-1 0-1.4c1-1 2.6-1.6 4.2-1.6s3.2.6 4.2 1.6c.4.4.4 1 0 1.4-.2.2-.4.3-.7.3zM6.4 15.9c-1.5-1.9-2.4-4-2.4-5.9C4 6.1 7.6 3 12 3s8 3.1 8 7c0 1.9-.9 4-2.4 5.9-.3.4-1 .5-1.4.1-.4-.3-.5-1-.1-1.4C17.3 13 18 11.4 18 10c0-2.8-2.7-5-6-5s-6 2.2-6 5c0 1.4.7 3 1.9 4.6.4.4.3 1.1-.1 1.4-.4.4-1.1.3-1.4-.1z" fill="currentColor"/></svg>
-          </label>
+          <button class="icon-btn" id="clear-chat-btn" title="New conversation" aria-label="New conversation">
+            <svg viewBox="0 0 24 24" class="icon"><path d="M12 4a8 8 0 1 0 8 8h2A10 10 0 1 1 12 2v2zm7-2v6h-6l2.4-2.4A6 6 0 0 0 12 6V4a8 8 0 0 1 5.7 2.4L19 5V2z" fill="currentColor" transform="rotate(90 12 12)"/></svg>
+          </button>
           <label class="toggle" title="Speak replies aloud">
             <input type="checkbox" id="speak-toggle" checked>
             <span class="track"><span class="thumb"></span></span>
@@ -59,45 +81,137 @@
         </div>
       </div>
       <div id="messages"></div>
+      <div id="edit-banner" class="hidden">
+        Editing your message — Diana will rewind and answer again
+        <button id="edit-cancel" aria-label="Cancel edit">cancel</button>
+      </div>
       <div id="composer">
-        <button id="mic-btn" title="Hold a conversation — click to talk" aria-label="Talk to Diana">
+        <button id="mic-btn" title="Talk to Diana" aria-label="Talk to Diana">
           <svg viewBox="0 0 24 24" class="icon"><path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 1 0-6 0v5a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z" fill="currentColor"/></svg>
         </button>
-        <input id="text-input" type="text" placeholder="…or type to Diana" autocomplete="off" aria-label="Message Diana">
-        <button id="send-btn" title="Send" aria-label="Send message">
+        <textarea id="text-input" rows="1" placeholder="type" autocomplete="off" aria-label="Message Diana"></textarea>
+        <button id="stop-btn" class="hidden" title="Stop Diana" aria-label="Stop generating">
+          <svg viewBox="0 0 24 24" class="icon"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/></svg>
+        </button>
+        <button id="send-btn" title="Send (Enter)" aria-label="Send message">
           <svg viewBox="0 0 24 24" class="icon"><path d="M3 20v-6l8-2-8-2V4l19 8-19 8z" fill="currentColor"/></svg>
         </button>
       </div>
     </section>
 
-    <!-- ============ MISSION TREE ============ -->
-    <section id="tree-panel" class="panel" data-panel="tree">
-      <div class="panel-head">
-        <h2>Mission Tree</h2>
-        <span class="hint" id="tree-count"></span>
-      </div>
-      <div id="tree"></div>
-    </section>
+    <!-- ============ RIGHT PANE VIEWS ============ -->
+    <div id="views">
 
-    <!-- ============ TEAM RAIL ============ -->
-    <aside id="team-panel" class="panel" data-panel="team">
-      <div class="panel-head"><h2>Agents</h2></div>
-      <div id="agents"></div>
-      <div class="panel-head"><h2>Connectors</h2>
-        <button class="icon-btn" id="mcp-add-btn" title="Connect an MCP server" aria-label="Connect an MCP server">
-          <svg viewBox="0 0 24 24" class="icon"><path d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6V5z" fill="currentColor"/></svg>
-        </button>
-      </div>
-      <div id="mcp"></div>
-      <div class="panel-head"><h2>Skill Library</h2>
-        <button class="icon-btn" id="skill-import-btn" title="Import a skill from GitHub" aria-label="Import a skill from GitHub">
-          <svg viewBox="0 0 24 24" class="icon"><path d="M12 2A10 10 0 0 0 2 12c0 4.4 2.9 8.2 6.8 9.5.5.1.7-.2.7-.5v-1.7c-2.8.6-3.4-1.2-3.4-1.2-.5-1.2-1.1-1.5-1.1-1.5-.9-.6.1-.6.1-.6 1 .1 1.5 1 1.5 1 .9 1.5 2.3 1.1 2.9.8.1-.6.3-1.1.6-1.3-2.2-.3-4.6-1.1-4.6-5 0-1.1.4-2 1-2.7-.1-.2-.4-1.2.1-2.6 0 0 .8-.3 2.8 1a9.6 9.6 0 0 1 5 0c1.9-1.3 2.8-1 2.8-1 .5 1.4.2 2.4.1 2.6.6.7 1 1.6 1 2.7 0 3.9-2.4 4.7-4.6 5 .4.3.7.9.7 1.9v2.8c0 .3.2.6.7.5A10 10 0 0 0 22 12 10 10 0 0 0 12 2z" fill="currentColor"/></svg>
-        </button>
-      </div>
-      <div id="skills"></div>
-    </aside>
+      <!-- Missions -->
+      <section class="view panel-page" data-view-panel="missions">
+        <div class="page-head">
+          <h2>Mission Tree</h2>
+          <div class="head-controls">
+            <span class="hint" id="tree-count"></span>
+            <button class="icon-btn" id="clear-missions-btn" title="Archive finished missions" aria-label="Archive finished missions">
+              <svg viewBox="0 0 24 24" class="icon"><path d="M5 7h14l-1 13a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 7zm5 3v8h2v-8h-2zM4 4h16v2H4V4zm5-2h6v2H9V2z" fill="currentColor"/></svg>
+            </button>
+          </div>
+        </div>
+        <div id="tree"></div>
+        <div class="page-head sub"><h2>Standing Schedules</h2></div>
+        <div id="schedules" class="card-grid"></div>
+        <div class="page-head sub"><h2>Activity</h2></div>
+        <div id="activity"></div>
+      </section>
 
-  </main>
+      <!-- Team -->
+      <section class="view panel-page" data-view-panel="team">
+        <div class="page-head"><h2>Agents</h2></div>
+        <div id="agents" class="card-grid"></div>
+        <div class="page-head sub"><h2>Skill Library</h2>
+          <button class="icon-btn" id="skill-import-btn" title="Import a skill from GitHub" aria-label="Import a skill from GitHub">
+            <svg viewBox="0 0 24 24" class="icon"><path d="M12 2A10 10 0 0 0 2 12c0 4.4 2.9 8.2 6.8 9.5.5.1.7-.2.7-.5v-1.7c-2.8.6-3.4-1.2-3.4-1.2-.5-1.2-1.1-1.5-1.1-1.5-.9-.6.1-.6.1-.6 1 .1 1.5 1 1.5 1 .9 1.5 2.3 1.1 2.9.8.1-.6.3-1.1.6-1.3-2.2-.3-4.6-1.1-4.6-5 0-1.1.4-2 1-2.7-.1-.2-.4-1.2.1-2.6 0 0 .8-.3 2.8 1a9.6 9.6 0 0 1 5 0c1.9-1.3 2.8-1 2.8-1 .5 1.4.2 2.4.1 2.6.6.7 1 1.6 1 2.7 0 3.9-2.4 4.7-4.6 5 .4.3.7.9.7 1.9v2.8c0 .3.2.6.7.5A10 10 0 0 0 22 12 10 10 0 0 0 12 2z" fill="currentColor"/></svg>
+          </button>
+        </div>
+        <div id="skills" class="card-grid"></div>
+      </section>
+
+      <!-- Connectors -->
+      <section class="view panel-page" data-view-panel="connect">
+        <div class="page-head"><h2>Connectors</h2>
+          <button class="icon-btn" id="mcp-add-btn" title="Connect an MCP server" aria-label="Connect an MCP server">
+            <svg viewBox="0 0 24 24" class="icon"><path d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6V5z" fill="currentColor"/></svg>
+          </button>
+        </div>
+        <p class="page-hint">Every tool a connector exposes becomes available to all agents during missions.</p>
+        <div id="mcp" class="card-grid"></div>
+      </section>
+
+      <!-- Settings -->
+      <section class="view panel-page" data-view-panel="settings">
+        <div class="page-head"><h2>Settings</h2></div>
+        <div class="settings-grid">
+
+          <div class="set-card">
+            <h3>Models</h3>
+            <label class="set-label" for="model-diana">Diana's brain</label>
+            <select class="modal-input" id="model-diana"></select>
+            <label class="set-label" for="model-worker">Workers</label>
+            <select class="modal-input" id="model-worker"></select>
+            <button class="btn primary" id="save-models-btn">Save</button>
+            <p class="set-hint">Takes effect immediately. Agents with their own model
+              (shown on their cards) keep it.</p>
+          </div>
+
+          <div class="set-card">
+            <h3>Voice</h3>
+            <label class="set-row toggle" title="Say 'Diana' out loud to wake her — the tab is the microphone">
+              <span>Always ready — wake on <strong>“Diana”</strong></span>
+              <input type="checkbox" id="wake-toggle">
+              <span class="track"><span class="thumb"></span></span>
+            </label>
+            <div class="set-kv"><span>Voice (TTS)</span><code id="info-tts">—</code></div>
+            <div class="set-kv"><span>Ears (whisper)</span><code id="info-stt">—</code></div>
+            <p class="set-hint">Speak-replies lives next to the chat. Voice engines are set
+              in <code>.env</code> (TTS_ENGINE, TTS_VOICE, STT_MODEL).</p>
+          </div>
+
+          <div class="set-card">
+            <h3>Access</h3>
+            <div class="set-kv"><span>This device</span><code id="info-here">—</code></div>
+            <div class="set-kv"><span>Phone (mic works)</span><code id="info-phone">—</code></div>
+            <div class="set-kv"><span>Access token</span><code id="info-token">off</code></div>
+            <a class="btn" href="/ca" download>Download certificate (/ca)</a>
+            <p class="set-hint">Trust the certificate on your phone once and the HTTPS
+              warning disappears forever.</p>
+          </div>
+
+          <div class="set-card">
+            <h3>Memories</h3>
+            <p class="set-hint">What Diana remembers about you. Tell her “remember that…”
+              to add one.</p>
+            <div id="memories"></div>
+          </div>
+
+          <div class="set-card">
+            <h3>Housekeeping</h3>
+            <button class="btn" id="hk-clear-chat">New conversation</button>
+            <button class="btn" id="hk-archive">Archive finished missions</button>
+            <a class="btn" href="/api/backup" download>Download backup (.zip)</a>
+            <p class="set-hint">Backup includes her database, all skills, the agent
+              workspace and connector config.</p>
+          </div>
+
+          <div class="set-card">
+            <h3>About</h3>
+            <div class="set-kv"><span>Diana</span><code>v1.0</code></div>
+            <div class="set-kv"><span>Agents</span><code id="info-agents">—</code></div>
+            <div class="set-kv"><span>Skills</span><code id="info-skills">—</code></div>
+            <div class="set-kv"><span>Connector tools</span><code id="info-tools">—</code></div>
+            <p class="set-hint">Fully local: Ollama brain, whisper ears, Piper voice.
+              Auto-restarts with Docker.</p>
+          </div>
+
+        </div>
+      </section>
+    </div>
+  </div>
 
   <!-- detail modal -->
   <div id="modal" class="hidden" role="dialog" aria-modal="true">

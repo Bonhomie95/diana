@@ -142,15 +142,15 @@ async def import_repo_skills(url: str) -> dict | None:
     if not paths:
         return None
     imported, failed = [], 0
-    for p in paths[:20]:
+    for p in paths[:60]:
         try:
             imported.append(await _import_skill_md(o, r, branch, p))
         except Exception as e:
             failed += 1
             log.warning("failed to import %s: %s", p, e)
     await hub.broadcast("skills", db.all_skills())
-    if len(paths) > 20:
-        log.info("capped import at 20 of %d skills in %s", len(paths), url)
+    if len(paths) > 60:
+        log.info("capped import at 60 of %d skills in %s", len(paths), url)
     return {"name": f"{len(imported)} skills from {r}" if len(imported) != 1 else imported[0],
             "description": f"imported from github.com/{o}/{r}",
             "source": url, "imported": imported, "failed": failed,
@@ -203,7 +203,7 @@ async def import_from_url(url: str, teach_to: str | None = None) -> dict:
         raw = await llm.chat(
             [{"role": "user", "content": DISTILL_PROMPT.format(
                 url=resolved, doc=doc[:16000])}],
-            model=config.DIANA_MODEL, temperature=0.4)
+            model=config.diana_model(), temperature=0.4)
         obj = llm.extract_json(raw) or {}
         if obj.get("content") and len(str(obj["content"])) > 100:
             name = str(obj.get("name") or "").strip()[:48]

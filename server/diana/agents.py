@@ -172,8 +172,10 @@ def _schema_hint(schema: dict) -> str:
     return "{" + ", ".join(parts) + "}"
 
 
-def _tool_instructions(agent: dict) -> tuple[str, set[str]]:
-    """Build the tool prompt from the agent's builtin tools + all MCP connectors."""
+def _tool_instructions(agent: dict, task_text: str = "") -> tuple[str, set[str]]:
+    """Build the tool prompt from the agent's builtin tools + MCP connectors.
+    When there are many MCP tools, list the ones most relevant to this task —
+    but any connected tool stays callable even if unlisted."""
     from .mcp_client import manager
     lines = []
     available: set[str] = set()
@@ -183,12 +185,28 @@ def _tool_instructions(agent: dict) -> tuple[str, set[str]]:
             lines.append(f'- {t} — {desc}. args: {args}')
             available.add(t)
     mcp_tools = manager.tool_map()
-    for name, info in list(mcp_tools.items())[:24]:
+    available.update(mcp_tools)  # dispatchable regardless of listing
+
+    words = set(re.findall(r"[a-z]{3,}", task_text.lower()))
+
+    def score(item):
+        name, info = item
+        server = name.split(":", 1)[0]
+        hay = set(re.findall(r"[a-z]{3,}",
+                             f"{name.replace(':', ' ').replace('_', ' ')} "
+                             f"{info['description']}".lower()))
+        # a server named in the task pulls its whole toolset in
+        return (10 if server in words else 0) + len(words & hay)
+
+    items = list(mcp_tools.items())
+    if len(items) > 30:
+        items = sorted(items, key=score, reverse=True)[:30]
+    for name, info in items:
         lines.append(f'- {name} — {info["description"] or "MCP tool"}. '
                      f'args: {_schema_hint(info["schema"])}')
-        available.add(name)
-    if len(mcp_tools) > 24:
-        lines.append(f"…and {len(mcp_tools) - 24} more MCP tools (same call format).")
+    if len(mcp_tools) > len(items):
+        lines.append(f"…and {len(mcp_tools) - len(items)} more MCP tools "
+                     "(same call format; call by name if you know one).")
     if not lines:
         return "", available
     instructions = (
@@ -252,7 +270,8 @@ async def run_task(task: dict, agent: dict) -> str:
                 f"- {t['title']}:\n{(t['result'] or '')[:1500]}" for t in done[-4:]
             )
 
-    tool_instructions, available_tools = _tool_instructions(agent)
+    tool_instructions, available_tools = _tool_instructions(
+        agent, f"{task['title']} {task['description']}")
     system = agent["system_prompt"] + _skill_block(
         agent, f"{task['title']} {task['description']}")
     if tool_instructions:
@@ -270,22 +289,31 @@ async def run_task(task: dict, agent: dict) -> str:
     messages = [{"role": "system", "content": system},
                 {"role": "user", "content": user}]
 
-    model = agent.get("model") or config.WORKER_MODEL
+    model = agent.get("model") or config.worker_model()
+    used_tools: list[str] = []
+
+    def _with_trail(answer: str) -> str:
+        if used_tools:
+            answer += "\n\n---\n*Tools used: " + ", ".join(used_tools) + "*"
+        return answer
+
     for _ in range(6):
         out = await llm.chat(messages, model=model, temperature=0.7)
         obj = llm.extract_json(out) if available_tools else None
         if obj and "final" in obj:
-            return str(obj["final"])
+            return _with_trail(str(obj["final"]))
         if obj and obj.get("tool") in available_tools:
             tool_name = obj["tool"]
             args = obj.get("args") or {}
             hub.emit("log", {"agent": agent["name"], "task_id": task["id"],
                              "text": f"{tool_name}({json.dumps(args)[:120]})"})
             result = await _dispatch_tool(tool_name, args)
+            used_tools.append(f"{tool_name}({json.dumps(args)[:80]})"
+                              + (" → error" if result.startswith("TOOL ERROR") else ""))
             messages.append({"role": "assistant", "content": out})
             messages.append({"role": "user",
                              "content": f"Tool result for {tool_name}:\n{result[:8000]}\n\n"
                                         "Continue. Remember to finish with a final JSON."})
             continue
-        return out  # plain answer
-    return out
+        return _with_trail(out)  # plain answer
+    return _with_trail(out)

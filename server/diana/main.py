@@ -10,7 +10,8 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import agents, config, db, llm, skills_import, supervisor, voice_stt, voice_tts
+from . import (agents, config, db, llm, scheduler, skills_import, supervisor,
+               voice_stt, voice_tts)
 from .events import hub
 from .mcp_client import manager as mcp
 from .tasks import engine
@@ -33,10 +34,12 @@ async def lifespan(app: FastAPI):
         _booted = True
         config.ensure_dirs()
         db.init()
+        db.prune_messages(500)
         agents.seed_agents()
         hub.bind_loop(asyncio.get_running_loop())
         voice_stt.warm()
         asyncio.create_task(engine.run_forever())
+        asyncio.create_task(scheduler.run_forever())
         asyncio.create_task(_boot_probe())
         mcp.start_all()
         log.info("Diana is online: http %s / https %s", config.PORT, config.TLS_PORT)
@@ -59,6 +62,26 @@ async def _boot_probe():
 
 
 app = FastAPI(title="Diana", lifespan=lifespan)
+
+AUTH_EXEMPT = {"/ca", "/api/health"}  # cert install & health probes stay open
+
+
+@app.middleware("http")
+async def token_auth(request, call_next):
+    if not config.DIANA_TOKEN or request.url.path in AUTH_EXEMPT:
+        return await call_next(request)
+    supplied = (request.query_params.get("token")
+                or request.headers.get("x-diana-token")
+                or request.cookies.get("diana_token"))
+    if supplied != config.DIANA_TOKEN:
+        return JSONResponse(
+            {"error": "unauthorized — open /?token=<your DIANA_TOKEN> once"},
+            status_code=401)
+    response = await call_next(request)
+    if request.query_params.get("token"):
+        response.set_cookie("diana_token", config.DIANA_TOKEN,
+                            max_age=90 * 86400, httponly=True, samesite="lax")
+    return response
 
 
 class MessageIn(BaseModel):
@@ -95,12 +118,19 @@ async def state():
     return {
         "status": hub.status,
         "ollama": url,
-        "models": {"diana": config.DIANA_MODEL, "worker": config.WORKER_MODEL},
+        "models": {"diana": config.diana_model(), "worker": config.worker_model()},
         "messages": db.recent_messages(60),
         "tree": db.task_tree(),
         "agents": db.all_agents(),
         "skills": db.all_skills(),
         "mcp": mcp.describe_all(),
+        "schedules": db.all_schedules(),
+        "memories": db.all_memories(),
+        "activity": list(hub.activity),
+        "voice": {"tts_engine": config.TTS_ENGINE, "tts_voice": config.TTS_VOICE,
+                  "stt_model": config.STT_MODEL},
+        "access": {"lan_ip": config.LAN_IP, "tls_port": config.TLS_PORT,
+                   "token_enabled": bool(config.DIANA_TOKEN)},
     }
 
 
@@ -111,7 +141,31 @@ async def message(body: MessageIn):
         return JSONResponse({"error": "empty"}, status_code=400)
     row = await supervisor.handle_user_message(text, source="text")
     engine.kick()
-    return {"reply": row["content"]}
+    return {"reply": row["content"], "stopped": row.get("stopped", False)}
+
+
+@app.post("/api/stop")
+async def stop_generation():
+    return {"stopped": await supervisor.stop_current()}
+
+
+class EditIn(BaseModel):
+    message_id: int
+    text: str
+
+
+@app.post("/api/messages/edit")
+async def edit_message(body: EditIn):
+    """Rewind the conversation to before this message and resend the corrected text."""
+    text = body.text.strip()
+    if not text:
+        return JSONResponse({"error": "empty"}, status_code=400)
+    await supervisor.stop_current()
+    db.delete_messages_from(body.message_id)
+    await hub.broadcast("history", db.recent_messages(60))
+    row = await supervisor.handle_user_message(text, source="text")
+    engine.kick()
+    return {"reply": row["content"], "stopped": row.get("stopped", False)}
 
 
 @app.post("/api/voice")
@@ -244,12 +298,125 @@ async def set_agent_skills(name: str, body: AgentSkillsIn):
             "unknown": [s for s in body.skills if s not in known]}
 
 
+class SettingsIn(BaseModel):
+    diana_model: str | None = None
+    worker_model: str | None = None
+
+
+@app.get("/api/models")
+async def models():
+    return {"models": [{"name": m["name"],
+                        "size_gb": round(m.get("size", 0) / 1e9, 1)}
+                       for m in await llm.list_models()],
+            "diana": config.diana_model(), "worker": config.worker_model()}
+
+
+@app.post("/api/settings")
+async def set_settings(body: SettingsIn):
+    if body.diana_model:
+        db.set_setting("DIANA_MODEL", body.diana_model)
+    if body.worker_model:
+        db.set_setting("WORKER_MODEL", body.worker_model)
+    return {"diana": config.diana_model(), "worker": config.worker_model()}
+
+
+@app.get("/api/schedules")
+async def schedules():
+    return db.all_schedules()
+
+
+@app.delete("/api/schedules/{sid}")
+async def delete_schedule(sid: int):
+    ok = db.delete_schedule(sid)
+    await hub.broadcast("schedules", db.all_schedules())
+    return {"removed": ok}
+
+
+@app.get("/api/memories")
+async def memories():
+    return db.all_memories()
+
+
+@app.delete("/api/memories/{mid}")
+async def delete_memory(mid: int):
+    ok = db.forget_memory(mid)
+    await hub.broadcast("memories", db.all_memories())
+    return {"removed": ok}
+
+
+@app.delete("/api/skills/{name}")
+async def delete_skill(name: str):
+    ok = db.delete_skill(name)
+    await hub.broadcast("skills", db.all_skills())
+    await hub.broadcast("agents", db.all_agents())
+    return {"removed": ok}
+
+
+@app.delete("/api/agents/{name}")
+async def delete_agent(name: str):
+    agent = db.get_agent(name)
+    if not agent:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    if agent["builtin"]:
+        return JSONResponse({"error": "built-in agents can't be deleted"}, status_code=400)
+    ok = db.delete_agent(name)
+    await hub.broadcast("agents", db.all_agents())
+    return {"removed": ok}
+
+
+@app.post("/api/missions/clear_finished")
+async def clear_finished():
+    n = db.archive_finished_missions()
+    await hub.broadcast("tree", db.task_tree())
+    return {"archived": n}
+
+
+@app.post("/api/messages/clear")
+async def clear_messages():
+    db.clear_messages()
+    await hub.broadcast("cleared", {})
+    return {"ok": True}
+
+
+@app.get("/api/backup")
+async def backup():
+    import io
+    import zipfile
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        try:
+            import sqlite3 as sq
+            import tempfile
+            with tempfile.NamedTemporaryFile(suffix=".db") as tmp:
+                dest = sq.connect(tmp.name)
+                db.conn().backup(dest)
+                dest.close()
+                z.write(tmp.name, "diana.db")
+        except Exception as e:
+            z.writestr("db-backup-error.txt", str(e))
+        for sub in ("skills", "workspace"):
+            base = config.DATA_DIR / sub
+            if base.exists():
+                for f in base.rglob("*"):
+                    if f.is_file() and f.stat().st_size < 20_000_000:
+                        z.write(f, f"{sub}/{f.relative_to(base)}")
+        for extra in ("mcp.json", "memory-graph.json"):
+            p = config.DATA_DIR / extra
+            if p.exists():
+                z.write(p, extra)
+    buf.seek(0)
+    return Response(content=buf.read(), media_type="application/zip",
+                    headers={"Content-Disposition":
+                             'attachment; filename="diana-backup.zip"'})
+
+
 class MCPIn(BaseModel):
     name: str
     url: str | None = None
     command: str | None = None
     args: list[str] = []
     env: dict[str, str] = {}
+    headers: dict[str, str] = {}
 
 
 @app.get("/api/mcp")
@@ -264,9 +431,21 @@ async def mcp_add(body: MCPIn):
         return JSONResponse({"error": "no name"}, status_code=400)
     if not body.url and not body.command:
         return JSONResponse({"error": "need a url or a command"}, status_code=400)
-    cfg = {"url": body.url} if body.url else \
+    cfg = {"url": body.url, "headers": body.headers} if body.url else \
           {"command": body.command, "args": body.args, "env": body.env}
     return await mcp.add(name, {k: v for k, v in cfg.items() if v})
+
+
+class MCPCallIn(BaseModel):
+    tool: str
+    args: dict = {}
+
+
+@app.post("/api/mcp/{name}/call")
+async def mcp_call(name: str, body: MCPCallIn):
+    """Directly invoke one MCP tool — debugging and power use."""
+    result = await mcp.call(f"{name}:{body.tool}", body.args)
+    return {"result": result[:20000]}
 
 
 @app.delete("/api/mcp/{name}")
@@ -315,6 +494,10 @@ async def skill_detail(name: str):
 
 @app.websocket("/ws")
 async def ws(websocket: WebSocket):
+    if config.DIANA_TOKEN and \
+            websocket.cookies.get("diana_token") != config.DIANA_TOKEN:
+        await websocket.close(code=4401)
+        return
     await hub.connect(websocket)
     try:
         await websocket.send_json({"type": "status",

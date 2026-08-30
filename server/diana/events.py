@@ -1,6 +1,8 @@
 import asyncio
 import json
 import logging
+import time
+from collections import deque
 
 log = logging.getLogger("diana.events")
 
@@ -12,6 +14,7 @@ class Hub:
         self.clients: set = set()
         self.status: str = "booting"  # booting | idle | listening | thinking | working | offline
         self.loop: asyncio.AbstractEventLoop | None = None
+        self.activity: deque = deque(maxlen=80)  # recent worker/tool events for the UI
 
     def bind_loop(self, loop: asyncio.AbstractEventLoop):
         self.loop = loop
@@ -24,6 +27,9 @@ class Hub:
         self.clients.discard(ws)
 
     async def broadcast(self, type_: str, data):
+        if type_ == "log" and isinstance(data, dict):
+            data = {**data, "ts": time.strftime("%H:%M:%S")}
+            self.activity.append(data)
         payload = json.dumps({"type": type_, "data": data})
         dead = []
         for ws in list(self.clients):

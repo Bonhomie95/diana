@@ -1,5 +1,8 @@
+import asyncio
+import contextlib
 import json
 import logging
+import re
 
 from . import config, db, llm
 from .events import hub
@@ -27,17 +30,21 @@ Connected tool servers (MCP) — your agents can call these tools during tasks:
 Things you have been asked to remember:
 {memories}
 
+Standing schedules:
+{schedules}
+
 Current missions (task tree):
 {tree}
 
-RESPONSE FORMAT — reply with ONLY one JSON object, no other text:
+RESPONSE FORMAT — reply with ONLY one JSON object, no other text. The "reply" field MUST \
+come first:
 {{
   "reply": "<what you say to the user — natural, spoken language, no markdown headers>",
   "actions": [ ... zero or more actions ... ]
 }}
 
 Available actions:
-- {{"type": "create_mission", "title": "...", "description": "...", "subtasks": [{{"title": "...", "description": "detailed instructions for the worker", "agent": "Scout|Sage|Forge|Quill|<any agent name>"}}]}}
+- {{"type": "create_mission", "title": "...", "description": "...", "sequential": false, "subtasks": [{{"title": "...", "description": "detailed instructions for the worker", "agent": "Scout|Sage|Forge|Quill|<any agent name>"}}]}} — set "sequential": true when later steps build on earlier results (each step then waits for the previous one and can see its output)
 - {{"type": "add_tasks", "mission_id": "<id>", "subtasks": [same shape as above]}}
 - {{"type": "cancel_task", "task_id": "<id>"}}
 - {{"type": "create_agent", "name": "...", "role": "...", "system_prompt": "detailed persona + instructions"}}
@@ -46,9 +53,15 @@ Available actions:
 - {{"type": "teach_skill", "agent": "<agent name>", "skill": "<skill name>"}}
 - {{"type": "remember", "content": "a fact worth keeping about the user or standing instructions"}}
 - {{"type": "forget", "memory_id": <id>}}
+- {{"type": "schedule", "when": "<spec>", "instruction": "what to do each time, self-contained"}} — spec is one of: "every N minutes", "every N hours", "daily HH:MM", "weekly mon|tue|...|sun HH:MM", "once YYYY-MM-DDTHH:MM" (local time)
+- {{"type": "cancel_schedule", "schedule_id": <id>}}
 
 Rules:
-- Casual conversation, questions about status, or anything you can answer directly: just reply, actions = [].
+- You personally have NO tools and NO live data access — never claim you checked, looked
+  up, or fetched anything yourself, and never invent facts like weather, prices, or news.
+  For any live lookup (weather, web, wikipedia, files, arxiv…), create a mission with a
+  single task for a suitable agent — the agents have the tools.
+- Casual conversation, questions about status, or anything you can answer directly from this conversation: just reply, actions = [].
 - Real work (research, writing, code, analysis, planning): create a mission with 1–5 well-scoped subtasks assigned to the best-fitted agents. Tell the user what you're setting in motion.
 - Only create a mission when the user asked for work to be done. Never invent work.
 - When asked to teach or improve your agents, write a genuinely useful skill document.
@@ -106,16 +119,80 @@ def _memories_text() -> str:
                      for m in db.all_memories(30)) or "(nothing yet)"
 
 
+def _schedules_text() -> str:
+    lines = []
+    for s in db.all_schedules():
+        state = f"next {s['next_run']}" if s["enabled"] and s["next_run"] else "inactive"
+        lines.append(f"- [{s['id']}] {s['spec']} ({state}): {s['instruction'][:100]}")
+    return "\n".join(lines) or "(none)"
+
+
 def system_prompt() -> str:
     return PERSONA.format(roster=_roster_text(), skills=_skills_text(),
                           mcp=_mcp_text(), memories=_memories_text(),
-                          tree=_tree_text())
+                          schedules=_schedules_text(), tree=_tree_text())
+
+
+class _ReplyStream:
+    """Incrementally extracts the value of the JSON "reply" field from streamed
+    model output and forwards it as UI deltas."""
+
+    def __init__(self):
+        self.buf = ""
+        self.mode = "search"
+        self.esc = False
+        self.emitted = False
+
+    async def feed(self, chunk: str):
+        if self.mode == "done":
+            return
+        self.buf += chunk
+        if self.mode == "search":
+            m = re.search(r'"reply"\s*:\s*"', self.buf)
+            if not m:
+                self.buf = self.buf[-24:]  # keep a tail in case the marker spans chunks
+                return
+            self.mode = "emit"
+            self.buf = self.buf[m.end():]
+        if self.mode == "emit":
+            out = []
+            i = 0
+            while i < len(self.buf):
+                c = self.buf[i]
+                if self.esc:
+                    out.append({"n": "\n", "t": "\t"}.get(c, c))
+                    self.esc = False
+                elif c == "\\":
+                    self.esc = True
+                elif c == '"':
+                    self.mode = "done"
+                    i += 1
+                    break
+                else:
+                    out.append(c)
+                i += 1
+            self.buf = "" if self.mode != "done" else self.buf[i:]
+            if out:
+                self.emitted = True
+                await hub.broadcast("delta", {"text": "".join(out)})
+
+
+_cancel_current: "asyncio.Event | None" = None
+
+
+async def stop_current() -> bool:
+    """Cancel the in-flight reply generation, if any."""
+    if _cancel_current and not _cancel_current.is_set():
+        _cancel_current.set()
+        return True
+    return False
 
 
 async def handle_user_message(text: str, source: str = "text") -> dict:
     """Full pipeline: store, think, act, reply. Returns the reply message row."""
-    db.add_message("user", text, {"source": source})
-    await hub.broadcast("message", {"role": "user", "content": text})
+    global _cancel_current
+    urow = db.add_message("user", text, {"source": source})
+    await hub.broadcast("message", {"role": "user", "content": text, "id": urow["id"]})
     await hub.set_status("thinking")
 
     history = [
@@ -125,16 +202,44 @@ async def handle_user_message(text: str, source: str = "text") -> dict:
     ]
     messages = [{"role": "system", "content": system_prompt()}] + history
 
+    streamer = _ReplyStream()
+    cancel = asyncio.Event()
+    _cancel_current = cancel
+    stopped = False
     try:
-        raw = await llm.chat(messages, model=config.DIANA_MODEL, temperature=0.6)
-        obj = llm.extract_json(raw) or {}
-        reply = str(obj.get("reply") or llm.strip_think(raw) or
-                    "I'm here, though I struggled to phrase that. Say it again?")
-        actions = obj.get("actions") or []
+        gen = asyncio.create_task(llm.chat_stream(
+            messages, streamer.feed, model=config.diana_model(),
+            temperature=0.6, num_ctx=32768))
+        waiter = asyncio.create_task(cancel.wait())
+        done, _pending = await asyncio.wait({gen, waiter},
+                                            return_when=asyncio.FIRST_COMPLETED)
+        if gen in done:
+            waiter.cancel()
+            raw = gen.result()
+            obj = llm.extract_json(raw) or {}
+            reply = str(obj.get("reply") or llm.strip_think(raw) or
+                        "I'm here, though I struggled to phrase that. Say it again?")
+            actions = obj.get("actions") or []
+        else:
+            gen.cancel()
+            # CancelledError is a BaseException — suppress it explicitly
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await gen
+            stopped = True
+            reply, actions = "", []
     except Exception as e:
         log.exception("Diana brain failure")
         reply = f"I hit a snag reaching my reasoning engine: {e}"
         actions = []
+    finally:
+        _cancel_current = None
+        await hub.broadcast("delta_done", {"streamed": streamer.emitted})
+
+    if stopped:
+        await hub.broadcast("stopped", {})
+        await hub.set_status("working" if db.tasks_by_status("pending") or
+                             db.tasks_by_status("running") else "idle")
+        return {"content": "", "stopped": True}
 
     performed = []
     for action in actions[:8]:
@@ -148,7 +253,7 @@ async def handle_user_message(text: str, source: str = "text") -> dict:
 
     row = db.add_message("assistant", reply, {"actions": performed})
     await hub.broadcast("message", {"role": "assistant", "content": reply,
-                                    "actions": performed})
+                                    "actions": performed, "id": row["id"]})
     await hub.set_status("working" if db.tasks_by_status("pending") or
                          db.tasks_by_status("running") else "idle")
     return row
@@ -160,6 +265,8 @@ async def perform_action(action: dict) -> str | None:
     if t == "create_mission":
         mission = db.create_task(action.get("title", "Untitled mission"),
                                  action.get("description", ""), status="active")
+        if action.get("sequential"):
+            db.update_task(mission["id"], mode="sequential")
         agent_names = {a["name"] for a in db.all_agents()}
         for i, st in enumerate(action.get("subtasks", [])[:8]):
             agent = st.get("agent") if st.get("agent") in agent_names else "Sage"
@@ -223,15 +330,32 @@ async def perform_action(action: dict) -> str | None:
         content = (action.get("content") or "").strip()
         if content:
             db.add_memory(content[:500])
+            await hub.broadcast("memories", db.all_memories())
             return "noted"
         return None
 
     if t == "forget":
         try:
             ok = db.forget_memory(int(action.get("memory_id")))
+            await hub.broadcast("memories", db.all_memories())
             return "forgotten" if ok else "(memory not found)"
         except (TypeError, ValueError):
             return "(bad memory id)"
+
+    if t == "schedule":
+        from . import scheduler
+        row = scheduler.create(action.get("when", ""), action.get("instruction", ""))
+        if row:
+            return f"scheduled: {row['spec']} (next {row['next_run']})"
+        return f"(couldn't parse schedule spec '{action.get('when', '')}')"
+
+    if t == "cancel_schedule":
+        try:
+            ok = db.delete_schedule(int(action.get("schedule_id")))
+            await hub.broadcast("schedules", db.all_schedules())
+            return "schedule cancelled" if ok else "(schedule not found)"
+        except (TypeError, ValueError):
+            return "(bad schedule id)"
 
     if t == "teach_skill":
         agent = db.get_agent(action.get("agent", ""))
@@ -267,7 +391,7 @@ async def evaluate_task(task: dict) -> dict:
                                 result=(task["result"] or "")[:6000])
     try:
         raw = await llm.chat([{"role": "user", "content": prompt}],
-                             model=config.DIANA_MODEL, temperature=0.2)
+                             model=config.diana_model(), temperature=0.2)
         obj = llm.extract_json(raw) or {}
         verdict = "pass" if str(obj.get("verdict", "pass")).lower().startswith("p") else "fail"
         return {"verdict": verdict, "feedback": str(obj.get("feedback", ""))}
@@ -302,7 +426,7 @@ async def summarize_mission(mission: dict) -> str:
                 title=mission["title"], status=mission["status"],
                 description=mission["description"],
                 results=results[:24000])}],
-            model=config.DIANA_MODEL, temperature=0.5)
+            model=config.diana_model(), temperature=0.5)
     except Exception:
         done = sum(1 for t in kids if t["status"] == "done")
         return (f"Mission **{mission['title']}** wrapped up: {done}/{len(kids)} tasks "

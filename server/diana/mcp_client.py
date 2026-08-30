@@ -111,7 +111,9 @@ class ServerConn:
                 from mcp.client.streamable_http import streamablehttp_client as http_client
             except ImportError:
                 from mcp.client.streamable_http import streamable_http_client as http_client
-            ctx = http_client(self.cfg["url"])
+            headers = self.cfg.get("headers") or None
+            ctx = http_client(self.cfg["url"], headers=headers) if headers \
+                else http_client(self.cfg["url"])
         else:
             from mcp import StdioServerParameters
             from mcp.client.stdio import stdio_client

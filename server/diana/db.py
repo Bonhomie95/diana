@@ -73,10 +73,24 @@ CREATE TABLE IF NOT EXISTS memories (
   content TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS schedules (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  spec TEXT NOT NULL,
+  instruction TEXT NOT NULL,
+  next_run TEXT,
+  last_run TEXT,
+  enabled INTEGER DEFAULT 1,
+  created_at TEXT NOT NULL
+);
 """
 
 MIGRATIONS = [
     "ALTER TABLE agents ADD COLUMN model TEXT",
+    "ALTER TABLE tasks ADD COLUMN mode TEXT",
 ]
 
 
@@ -114,6 +128,77 @@ def recent_messages(limit: int = 20) -> list[dict]:
             "SELECT * FROM messages ORDER BY id DESC LIMIT ?", (limit,)
         ).fetchall()
     return list(reversed(_rows(rows)))
+
+
+def clear_messages():
+    with _lock:
+        conn().execute("DELETE FROM messages")
+        conn().commit()
+
+
+def delete_messages_from(mid: int):
+    """Rewind: drop this message and everything after it."""
+    with _lock:
+        conn().execute("DELETE FROM messages WHERE id>=?", (mid,))
+        conn().commit()
+
+
+def prune_messages(keep: int = 500):
+    with _lock:
+        conn().execute(
+            "DELETE FROM messages WHERE id NOT IN"
+            " (SELECT id FROM messages ORDER BY id DESC LIMIT ?)", (keep,))
+        conn().commit()
+
+
+# ---------- settings ----------
+
+def get_setting(key: str, default: str | None = None) -> str | None:
+    with _lock:
+        row = conn().execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+    return row["value"] if row else default
+
+
+def set_setting(key: str, value: str):
+    with _lock:
+        conn().execute("INSERT INTO settings(key, value) VALUES (?,?)"
+                       " ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                       (key, value))
+        conn().commit()
+
+
+# ---------- schedules ----------
+
+def add_schedule(spec: str, instruction: str, next_run: str) -> dict:
+    with _lock:
+        cur = conn().execute(
+            "INSERT INTO schedules(spec, instruction, next_run, created_at) VALUES (?,?,?,?)",
+            (spec, instruction, next_run, now()))
+        conn().commit()
+        row = conn().execute("SELECT * FROM schedules WHERE id=?", (cur.lastrowid,)).fetchone()
+    return dict(row)
+
+
+def update_schedule(sid: int, **fields):
+    if not fields:
+        return
+    sets = ", ".join(f"{k}=?" for k in fields)
+    with _lock:
+        conn().execute(f"UPDATE schedules SET {sets} WHERE id=?", (*fields.values(), sid))
+        conn().commit()
+
+
+def delete_schedule(sid: int) -> bool:
+    with _lock:
+        cur = conn().execute("DELETE FROM schedules WHERE id=?", (sid,))
+        conn().commit()
+    return cur.rowcount > 0
+
+
+def all_schedules() -> list[dict]:
+    with _lock:
+        rows = conn().execute("SELECT * FROM schedules ORDER BY id ASC").fetchall()
+    return _rows(rows)
 
 
 # ---------- tasks ----------
@@ -190,8 +275,17 @@ def task_tree() -> list[dict]:
         node["children"] = [build(k) for k in kids]
         return node
 
-    roots = by_parent.get(None, [])
+    roots = [r for r in by_parent.get(None, []) if r["status"] != "archived"]
     return [build(r) for r in reversed(roots)]
+
+
+def archive_finished_missions() -> int:
+    with _lock:
+        cur = conn().execute(
+            "UPDATE tasks SET status='archived', updated_at=? WHERE parent_id IS NULL"
+            " AND status IN ('done','failed','cancelled')", (now(),))
+        conn().commit()
+    return cur.rowcount
 
 
 # ---------- agents ----------
@@ -238,6 +332,29 @@ def set_agent_skills(name: str, skills: list[str]):
     with _lock:
         conn().execute("UPDATE agents SET skills=? WHERE name=?", (json.dumps(skills), name))
         conn().commit()
+
+
+def delete_agent(name: str) -> bool:
+    with _lock:
+        cur = conn().execute("DELETE FROM agents WHERE name=? AND builtin=0", (name,))
+        conn().commit()
+    return cur.rowcount > 0
+
+
+def delete_skill(name: str) -> bool:
+    with _lock:
+        cur = conn().execute("DELETE FROM skills WHERE name=?", (name,))
+        conn().commit()
+    if cur.rowcount:
+        for a in all_agents():
+            if name in a["skills"]:
+                set_agent_skills(a["name"], [s for s in a["skills"] if s != name])
+        try:
+            safe = "".join(c for c in name if c.isalnum() or c in "-_ ").strip().replace(" ", "-")
+            (config.SKILLS_DIR / f"{safe}.md").unlink(missing_ok=True)
+        except Exception:
+            pass
+    return cur.rowcount > 0
 
 
 # ---------- skills ----------

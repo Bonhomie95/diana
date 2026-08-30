@@ -7,7 +7,15 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /app
 
 # node + npm so npx-based MCP servers work; uv provides uvx for python MCP servers
-RUN apt-get update && apt-get install -y --no-install-recommends nodejs npm \
+RUN apt-get update && apt-get install -y --no-install-recommends nodejs npm tzdata git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Playwright MCP + a real headless Chromium so agents can browse the web.
+# `playwright install --with-deps` pulls the system libraries; the second install
+# fetches the exact browser build @playwright/mcp's bundled playwright expects.
+RUN npm install -g playwright @playwright/mcp \
+    && playwright install --with-deps chromium \
+    && playwright-mcp install-browser chrome-for-testing \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .

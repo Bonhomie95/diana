@@ -65,24 +65,34 @@ def strip_think(text: str) -> str:
     return text.strip()
 
 
-async def chat(messages: list[dict], model: str | None = None,
-               temperature: float = 0.7, num_ctx: int = 16384) -> str:
-    """Non-streaming chat completion. Raises RuntimeError when Ollama is unreachable."""
-    url = await base_url()
-    if not url:
-        url = await base_url(force=True)
-    if not url:
-        raise RuntimeError("Ollama is unreachable. Is it running?")
-    model = model or config.DIANA_MODEL
+def _payload(messages, model, temperature, num_ctx):
     payload = {
         "model": model,
         "messages": messages,
         "stream": False,
+        "keep_alive": "30m",  # keep the model warm between turns
         "options": {"temperature": temperature, "num_ctx": num_ctx},
     }
     # Disable chain-of-thought for snappy replies on thinking-capable models.
     if _think_capable.get(model):
         payload["think"] = False
+    return payload
+
+
+async def _resolve_url() -> str:
+    url = await base_url()
+    if not url:
+        url = await base_url(force=True)
+    if not url:
+        raise RuntimeError("Ollama is unreachable. Is it running?")
+    return url
+
+
+async def chat(messages: list[dict], model: str | None = None,
+               temperature: float = 0.7, num_ctx: int = 16384) -> str:
+    """Non-streaming chat completion. Raises RuntimeError when Ollama is unreachable."""
+    url = await _resolve_url()
+    payload = _payload(messages, model or config.diana_model(), temperature, num_ctx)
     try:
         r = await client().post(f"{url}/api/chat", json=payload)
         if r.status_code != 200 and "think" in payload:
@@ -95,6 +105,43 @@ async def chat(messages: list[dict], model: str | None = None,
         global _base_url
         _base_url = None
         raise RuntimeError(f"LLM call failed: {e}") from e
+
+
+async def chat_stream(messages: list[dict], on_delta, model: str | None = None,
+                      temperature: float = 0.7, num_ctx: int = 16384) -> str:
+    """Streaming chat: awaits on_delta(text_chunk) per token batch, returns full text."""
+    url = await _resolve_url()
+    payload = _payload(messages, model or config.diana_model(), temperature, num_ctx)
+    payload["stream"] = True
+    for attempt in (1, 2):
+        try:
+            full = []
+            async with client().stream("POST", f"{url}/api/chat", json=payload) as r:
+                if r.status_code != 200:
+                    if "think" in payload and attempt == 1:
+                        payload.pop("think")
+                        continue
+                    body = (await r.aread())[:200]
+                    raise RuntimeError(f"LLM stream failed: {r.status_code} {body!r}")
+                async for line in r.aiter_lines():
+                    if not line.strip():
+                        continue
+                    try:
+                        obj = json.loads(line)
+                    except Exception:
+                        continue
+                    chunk = obj.get("message", {}).get("content", "")
+                    if chunk:
+                        full.append(chunk)
+                        await on_delta(chunk)
+                    if obj.get("done"):
+                        break
+            return strip_think("".join(full))
+        except httpx.HTTPError as e:
+            global _base_url
+            _base_url = None
+            raise RuntimeError(f"LLM stream failed: {e}") from e
+    return ""
 
 
 def extract_json(text: str) -> dict | None:

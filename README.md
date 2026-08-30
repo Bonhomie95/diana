@@ -87,8 +87,38 @@ Copy `.env.example` to `.env` and edit. Notables:
 - **MCP connectors** — plug any Model Context Protocol server into the team (Team tab →
   Connectors → **+**, or edit `/data/mcp.json`). Remote URLs and local commands both work
   (`npx` and `uvx` are available in the container). Preconfigured: `time`,
-  `files` (a real read/write workspace at `/data/workspace`), and `memory`
-  (a knowledge graph). Every connected tool becomes available to every agent.
+  `files` (a real read/write workspace at `/data/workspace`), `memory` (a knowledge
+  graph), `fetch` (clean page extraction), `browser` (a real headless Chromium via
+  Playwright MCP — navigate, click, read live websites), `git` (repo operations in the
+  workspace), `sqlite` (a scratch analytics database), `markitdown` (convert
+  PDFs/Office docs/URLs to markdown), and `thinking` (structured reasoning scratchpad).
+  Tools are relevance-ranked into each task's prompt, and results carry a "Tools used"
+  trail. `POST /api/mcp/{name}/call` invokes any tool directly. For servers needing
+  secrets, the add-connector dialog has a KEY=VALUE box (env vars for commands, HTTP
+  headers for URLs) — e.g. GitHub:
+  `npx -y @modelcontextprotocol/server-github` + `GITHUB_PERSONAL_ACCESS_TOKEN=<PAT>`.
+- **Streaming replies** — Diana's answers stream into the chat token by token, and with
+  voice on she starts speaking sentence-by-sentence before the full reply is done.
+  Talking to her (mic) interrupts her mid-sentence.
+- **Scheduled missions** — "every morning at 9, brief me on X" creates a standing
+  schedule (specs: `every N minutes/hours`, `daily HH:MM`, `weekly mon HH:MM`,
+  `once YYYY-MM-DDTHH:MM`; container runs in `TZ`, default America/Chicago). Manage
+  them in Team → Schedules.
+- **Runtime model switching** — click the model chip in the top bar to swap Diana's
+  brain or the worker model live, no restart.
+- **Sequential missions** — when steps depend on each other, Diana marks the mission
+  sequential: each step waits for the previous one and builds on its result.
+- **Activity feed** — a live ledger under the mission tree: which agent started what,
+  every tool call, and each review verdict (passed / sent back / failed), timestamped.
+- **Optional access token** — set `DIANA_TOKEN` in `.env` and every device must open
+  `/?token=<value>` once (cookie remembers it). Off by default; `/ca` and health stay open.
+- **Tests** — `docker exec diana python -m unittest diana.tests.test_core -v`
+  (25 pure-logic tests: JSON extraction, reply streaming, schedule specs, skill parsing).
+- **Housekeeping** — new-conversation button, archive-finished-missions button, delete
+  skills/agents/memories/schedules from the UI, desktop notifications for mission
+  debriefs when the tab is in the background, installable as a home-screen app (PWA),
+  and **Download backup** (bottom of the Team rail) exports a zip of the database,
+  skills, workspace and connector config.
 - **Long-term memory** — tell Diana "remember: …" and it persists across restarts;
   she recalls it in every conversation and can be told to forget.
 - **Per-agent models** — each agent can run its own Ollama model (Cipher uses
